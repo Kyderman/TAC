@@ -148,6 +148,7 @@ public class DummyAgent extends AgentImpl {
 
   private float[] prices;
   private List<Intention> intentions = new ArrayList<Intention>();
+  private boolean hotelsAllocated = false;
 
   protected void init(ArgEnumerator args) {
     prices = new float[agent.getAuctionNo()];
@@ -159,17 +160,16 @@ public class DummyAgent extends AgentImpl {
     List<Intention> auctionIntentions = getIntentionsForAuction(auction);
     
     if(auctionIntentions.size() > 0) {
-      if (auctionCategory == TACAgent.CAT_HOTEL) {
-        /*int alloc = auctionIntentions.length;
-        if (alloc > 0 && quote.hasHQW(agent.getBid(auction)) && quote.getHQW() < alloc) {
-          Bid bid = new Bid(auction);
-          // Can not own anything in hotel auctions...
-          prices[auction] = quote.getAskPrice() + 50;
-          bid.addBidPoint(alloc, prices[auction]);
-
-          agent.submitBid(bid);*/
+      if (auctionCategory == TACAgent.CAT_FLIGHT) {
+        for (Intention intention : auctionIntentions) {
+          intention.isAcquired = true;
+          intention.currentBid = quote.getAskPrice();
         }
-    } else if (auctionCategory == TACAgent.CAT_ENTERTAINMENT) {
+      } else if (auctionCategory == TACAgent.CAT_HOTEL) {
+       
+
+       
+      } else if (auctionCategory == TACAgent.CAT_ENTERTAINMENT) {
         /*int alloc = auctionIntentions.length - agent.getOwn(auction);
         if (alloc != 0) {
           Bid bid = new Bid(auction);
@@ -183,6 +183,7 @@ public class DummyAgent extends AgentImpl {
           bid.addBidPoint(alloc, prices[auction]);
           agent.submitBid(bid);
         }*/
+      }
     }
   }
 
@@ -190,6 +191,15 @@ public class DummyAgent extends AgentImpl {
     log.fine("All quotes for "
 	     + agent.auctionCategoryToString(auctionCategory)
 	     + " has been updated");
+
+    // if flights allocated
+    if (auctionCategory == TACAgent.CAT_FLIGHT) {
+      if(isFlightsAcquired() && !hotelsAllocated) {
+        // Allocate hotels based on prices paid for flights
+        sendHotelBids();
+        hotelsAllocated = true;
+      }
+    }
   }
 
   public void bidUpdated(Bid bid) {
@@ -212,7 +222,7 @@ public class DummyAgent extends AgentImpl {
 
   public void gameStarted() {
     log.fine("Game " + agent.getGameID() + " started!");
-
+    hotelsAllocated = false;
     calculateIntentions();
     sendBids();
   }
@@ -223,6 +233,54 @@ public class DummyAgent extends AgentImpl {
 
   public void auctionClosed(int auction) {
     log.fine("*** Auction " + auction + " closed!");
+
+    int auctionCategory = agent.getAuctionCategory(auction);
+    List<Intention> auctionIntentions = getIntentionsForAuction(auction);
+    
+    if(auctionIntentions.size() > 0) {
+     
+      if (auctionCategory == TACAgent.CAT_HOTEL) {
+        int alloc = auctionIntentions.size();
+        int have = agent.getOwn(auction);
+        log.finer("alloc: " + alloc + " have: " + have);
+        
+        // using have work out the "have" highest bids, mark them as acquired
+        if(have == alloc) {
+          log.finer("have all allocations");
+          for (Intention intention : auctionIntentions) {
+            if(!intention.isAcquired){
+              log.finer("setting as acquired");
+              intention.isAcquired = true;
+            } else {
+              log.finer("already set as acquired");
+            }
+          }
+        } else if (have > 0 ) {
+          log.finer("have some of our allocations: " + have);
+          Map<Intention, Float> valueMap = new LinkedHashMap<Intention, Float>();
+          for (Intention intention : auctionIntentions) {
+            if(!intention.isAcquired) {
+              valueMap.put(intention, intention.currentBid);
+              log.finer("IN: " + intention.currentBid);
+            } else {
+              log.finer("OUT already acquired: " + intention.currentBid);
+            }
+          }
+
+          Map<Intention, Float> sortedValueMap = sortByValue(valueMap);
+
+          int cur = 0;
+          for(Intention intention : sortedValueMap.keySet()) {
+            intention.isAcquired = true;
+            log.finer("ACQUIRED");
+            cur++;
+            if(cur == have) {
+              break;
+            }
+          }
+        }
+      }
+    }
   }
 
   private void sendBids() {
@@ -241,11 +299,11 @@ public class DummyAgent extends AgentImpl {
             }
           break;
           case TACAgent.CAT_HOTEL:
-            for (Intention intention : auctionIntentions) {
+            /*for (Intention intention : auctionIntentions) {
               bid.addBidPoint(1, 200);
               intention.currentBid = 200;
               intention.maximumBid = 400;
-            }
+            }*/
           break;
           case TACAgent.CAT_ENTERTAINMENT:
             for (Intention intention : auctionIntentions) {
@@ -254,6 +312,32 @@ public class DummyAgent extends AgentImpl {
               intention.maximumBid = 200;
             }
           break;
+        }
+        agent.submitBid(bid);
+      }
+    }
+  }
+
+  public void transaction(Transaction transaction) {
+    int auction = transaction.getAuction();
+    int auctionCategory = agent.getAuctionCategory(auction);
+    List<Intention> auctionIntentions = getIntentionsForAuction(auction);
+
+    if(auctionIntentions.size() > 0) {
+      if (auctionCategory == TACAgent.CAT_HOTEL) {
+        for (Intention intention : auctionIntentions) {
+           intention.finalPrice = transaction.getPrice();
+        }
+      }
+    }
+  }
+
+  private void sendHotelBids() {
+    for (int i = 0, n = agent.getAuctionNo(); i < n; i++) {
+      if (agent.getAuctionCategory(i) == TACAgent.CAT_HOTEL) {
+        Bid bid = new Bid(i);
+        for (Intention intention : getIntentionsForAuction(i)) {
+          bid.addBidPoint(1, getMaxHotelSpend(intention.customerId));
         }
         agent.submitBid(bid);
       }
@@ -374,6 +458,15 @@ public class DummyAgent extends AgentImpl {
     TACAgent.main(args);
   }
 
+  public float getMaxHotelSpend(int customerId) {
+    float spent = getSpentOnFlights(customerId);
+    float toSpend = 1000 - spent;
+    int inFlight = agent.getClientPreference(customerId, TACAgent.ARRIVAL);
+    int outFlight = agent.getClientPreference(customerId, TACAgent.DEPARTURE);
+    int hotelCount = outFlight - inFlight;
+    return (toSpend / hotelCount);
+  }
+
   public List<Intention> getIntentionsForAuction(int auctionId) {
     List<Intention> inten = new ArrayList<Intention>();
     for (Intention intention : intentions) {
@@ -384,13 +477,65 @@ public class DummyAgent extends AgentImpl {
     return inten;
   }
 
+  public int getOwned(int auctionId) {
+    int ownedCount = 0;
+    for (Intention intention : getIntentionsForAuction(auctionId)) {
+      if(intention.isAcquired) {
+        ownedCount++;
+      }
+
+    }
+    return ownedCount;
+  }
+
+  public List<Intention> getIntentionsForCustomer(int customerId) {
+    List<Intention> inten = new ArrayList<Intention>();
+    for (Intention intention : intentions) {
+      if(intention.customerId == customerId) {
+        inten.add(intention);
+      }
+    }
+    return inten;
+  }
+
+  public float getSpentOnFlights(int customerId) {
+    float spent = 0;
+    for (Intention intention : getFlightIntentions(customerId)) {
+      spent += intention.currentBid;
+    }
+    return spent;
+  }
+
+  public List<Intention> getFlightIntentions(int customerId) {
+    List<Intention> inten = new ArrayList<Intention>();
+    for (Intention intention : intentions) {
+      if((intention.customerId == customerId) && (agent.getAuctionCategory(intention.auctionId) == TACAgent.CAT_FLIGHT)) {
+        inten.add(intention);
+      }
+    }
+    return inten;
+  }
+
+  public boolean isFlightsAcquired() {
+    for (Intention intention : intentions) {
+      if((agent.getAuctionCategory(intention.auctionId) == TACAgent.CAT_FLIGHT)) {
+        if(!intention.isAcquired) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
   class Intention {
 	  public int auctionId;
+    public float finalPrice;
     public int customerId;
     public float currentBid;
     public float maximumBid;
     public int bonusValue;
     public boolean isSell;
+    public boolean isAcquired;
 
     public Intention(int cId, int bV, int aId) {
       auctionId = aId;
@@ -399,7 +544,11 @@ public class DummyAgent extends AgentImpl {
       maximumBid = -1;
       bonusValue = bV;
       isSell = false;
+      isAcquired = false;
+      finalPrice = -1;
     }
   }
+
+  
 
 } // DummyAgent
